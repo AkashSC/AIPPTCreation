@@ -110,6 +110,7 @@ def parse_style_from_prompt(prompt: str):
 # Robust hex/named color to RGB
 # ------------------------------
 def hex_to_rgb_safe(color_str):
+    """Convert hex (#RRGGBB) or known color name to RGBColor, fallback white."""
     named_colors = {
         "dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00",
         "yellow":"#FFFF00","black":"#000000","white":"#FFFFFF",
@@ -174,7 +175,7 @@ def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3
     return slides
 
 # ------------------------------
-# Safe PPT generator
+# PPT generator
 # ------------------------------
 def make_ppt(slides, style=None, logo_file=None):
     prs = Presentation()
@@ -186,18 +187,19 @@ def make_ppt(slides, style=None, logo_file=None):
     emoji = style.get("emoji_in_bullets", False)
     footer_text = style.get("footer_text", "")
 
-    for idx, s in enumerate(slides):
-        layout = prs.slide_layouts[1] if idx>0 else prs.slide_layouts[0]  # title+content
-        slide = prs.slides.add_slide(layout)
+    # Title slide
+    title_slide = prs.slides.add_slide(prs.slide_layouts[0])
+    title_slide.shapes.title.text = "Auto-generated PPT"
+    title_slide.placeholders[1].text = "via Groq + Agentic AI"
+    fill = title_slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
 
-        # Set background color safely
-        slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
-
-        # Title
+    # Content slides
+    for s in slides:
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
         slide.shapes.title.text = clean_text(s["title"])
 
-        # Content
         tf = slide.placeholders[1].text_frame
         tf.clear()
         for b in s["bullets"]:
@@ -208,7 +210,10 @@ def make_ppt(slides, style=None, logo_file=None):
             p.level = 0
             p.font.size = Pt(font_size)
             p.font.name = font_name
-            p.font.color.rgb = hex_to_rgb_safe(font_color)
+            try:
+                p.font.color.rgb = hex_to_rgb_safe(font_color)
+            except:
+                pass
 
         # Footer
         if footer_text:
@@ -220,6 +225,11 @@ def make_ppt(slides, style=None, logo_file=None):
         # Logo
         if logo_file:
             slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
+
+        # Background
+        fill = slide.background.fill
+        fill.solid()
+        fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
 
     out = io.BytesIO()
     prs.save(out)
@@ -234,7 +244,7 @@ st.title("📄 Files to PPT Conversion")
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
     "Design & Styling Instructions",
-    "Example:\n- Background: green\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
+    "Example:\n- Background: blue\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
 )
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
