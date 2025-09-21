@@ -43,7 +43,14 @@ def extract_text(uploaded_file):
         return extract_text_from_txt(data)
 
 # ------------------------------
-# Local fallback
+# Cleanup helper
+# ------------------------------
+def clean_text(text: str) -> str:
+    # remove HTML-like tags e.g. <font>, <b>, <i>
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+# ------------------------------
+# Local fallback summarizer
 # ------------------------------
 def simple_local_summary(text: str, max_sentences: int = 4) -> str:
     t = re.sub(r"\s+", " ", text).strip()
@@ -51,7 +58,7 @@ def simple_local_summary(text: str, max_sentences: int = 4) -> str:
     return " ".join(sentences[:max_sentences]) or t[:200]
 
 # ------------------------------
-# Summarizer + Design extraction
+# Summarizer + Style extraction
 # ------------------------------
 def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODEL, max_chunk_chars=3000):
     slides, style = [], {}
@@ -96,8 +103,7 @@ def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODE
         except Exception:
             out = simple_local_summary(chunk)
 
-        # Parse output
-        style_json = None
+        # Parse style JSON if present
         if "<STYLE_JSON>" in out and "</STYLE_JSON>" in out:
             style_block = out.split("<STYLE_JSON>")[1].split("</STYLE_JSON>")[0]
             try:
@@ -106,9 +112,10 @@ def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODE
             except:
                 pass
 
-        lines = [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("<STYLE_JSON>")]
-        title = lines[0] if lines else f"Part {idx}"
-        bullets = [l.lstrip("-•* ").strip() for l in lines[1:] if not l.startswith("STYLE_JSON")] or [out]
+        # Clean slide text
+        lines = [clean_text(l.strip()) for l in out.splitlines() if l.strip() and not l.startswith("<STYLE_JSON>")]
+        title = clean_text(lines[0]) if lines else f"Part {idx}"
+        bullets = [clean_text(l.lstrip("-•* ").strip()) for l in lines[1:] if not l.startswith("STYLE_JSON")] or [clean_text(out)]
         slides.append({"title": title, "bullets": bullets[:6]})
 
     return slides, style
@@ -130,32 +137,34 @@ def make_ppt(slides, style=None, logo_file=None):
     title_slide.shapes.title.text = "Auto-generated PPT"
     title_slide.placeholders[1].text = "via Groq + Agentic AI"
 
-    # Apply background color
-    for slide in prs.slides:
-        fill = slide.background.fill
-        fill.solid()
-        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#", ""))
+    # Apply background to title slide
+    fill = title_slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#", ""))
 
     # Content slides
     for s in slides:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = s["title"]
+        slide.shapes.title.text = clean_text(s["title"])
 
         tf = slide.placeholders[1].text_frame
         tf.clear()
         for b in s["bullets"]:
             p = tf.add_paragraph()
-            p.text = b
+            p.text = clean_text(b)
             p.level = 0
             p.font.size = Pt(font_size)
             p.font.name = font_name
-            p.font.color.rgb = RGBColor.from_string(font_color.replace("#", ""))
+            try:
+                p.font.color.rgb = RGBColor.from_string(font_color.replace("#", ""))
+            except:
+                pass
 
-        # Inject logo
+        # Inject logo bottom-right
         if logo_file:
             slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
 
-        # Background for each slide
+        # Background color
         fill = slide.background.fill
         fill.solid()
         fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#", ""))
@@ -171,8 +180,10 @@ def make_ppt(slides, style=None, logo_file=None):
 st.title("📄 ➜ 🖥️ Multi-doc to PPT (Groq Agentic AI + Custom Design)")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
-design_prompt = st.text_area("Design Instructions (optional)", 
-                             "Examples:\n- Use dark blue background and white text\n- Font: Calibri, size 20\n- Add corporate branding feel")
+design_prompt = st.text_area(
+    "Design Instructions (optional)",
+    "Examples:\n- Use dark blue background and white text\n- Font: Calibri, size 20\n- Add corporate branding feel\n- Make headings bold and professional"
+)
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
 
@@ -182,7 +193,7 @@ if files and st.button("Generate PPT"):
         text = extract_text(f)
         summaries, style = summarize_and_style(text, design_prompt, model=model_choice)
         all_slides.extend(summaries)
-        final_style.update(style)  # override with last seen
+        final_style.update(style)
         st.success(f"Processed {f.name} → {len(summaries)} slides")
 
     pptx_bytes = make_ppt(all_slides, style=final_style, logo_file=logo if logo else None)
