@@ -239,12 +239,12 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 Files to PPT Conversion")
+st.title("📄 Files To PPT Conversion")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
     "Design & Styling Instructions",
-    "Example:\n- Background: blue\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
+    "Example:\n- Background: green\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
 )
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
