@@ -121,18 +121,20 @@ def hex_to_rgb_safe(color_str):
         return RGBColor(255,255,255)
 
 # ------------------------------
-# Parse bullets properly
+# Parse bullets robustly
 # ------------------------------
 def parse_bullets(lines):
     bullets = []
     for line in lines:
         line_clean = clean_text(line.strip())
-        if line_clean.lower().startswith("bullet") or line_clean.lower().startswith("points"):
+        if not line_clean:
             continue
-        if line_clean.startswith(("-", "•", "*")):
-            line_clean = line_clean.lstrip("-•* ").strip()
-        if line_clean:
-            bullets.append(line_clean)
+        # Skip headers
+        if re.match(r'^(bullet|points|summary|slide)', line_clean.lower()):
+            continue
+        # Remove bullet markers or numbering
+        line_clean = re.sub(r'^(\-|\*|•|\d+\.)\s*', '', line_clean)
+        bullets.append(line_clean)
     return bullets
 
 # ------------------------------
