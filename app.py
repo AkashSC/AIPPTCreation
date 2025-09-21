@@ -121,7 +121,7 @@ def hex_to_rgb_safe(color_str):
         return RGBColor(255,255,255)
 
 # ------------------------------
-# Parse bullets robustly
+# Robust bullet parsing
 # ------------------------------
 def parse_bullets(lines):
     bullets = []
@@ -129,12 +129,13 @@ def parse_bullets(lines):
         line_clean = clean_text(line.strip())
         if not line_clean:
             continue
-        # Skip headers
+        # Ignore common headers
         if re.match(r'^(bullet|points|summary|slide)', line_clean.lower()):
             continue
-        # Remove bullet markers or numbering
-        line_clean = re.sub(r'^(\-|\*|•|\d+\.)\s*', '', line_clean)
-        bullets.append(line_clean)
+        # Remove bullets, numbers, or emojis at start
+        line_clean = re.sub(r'^([\-•*\d\.\s]+|[\U0001F300-\U0001FAFF]+)\s*', '', line_clean)
+        if line_clean:
+            bullets.append(line_clean)
     return bullets
 
 # ------------------------------
@@ -227,7 +228,7 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 Files to PPT Conversion")
+st.title("📄 Files to PPT Convertor")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
@@ -235,7 +236,8 @@ design_prompt = st.text_area(
     "Example:\n- Background: dark blue (#003366)\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
 )
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
-model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
+
+model_choice = DEFAULT_MODEL  # fixed model, dropdown removed
 
 if files and st.button("Generate PPT"):
     all_slides = []
