@@ -208,7 +208,7 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 ➜ 🖥️ Multi-doc to PPT (Fully Prompt-Driven)")
+st.title("📄 Files to PPT Conversion")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
