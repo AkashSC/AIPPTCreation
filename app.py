@@ -71,7 +71,7 @@ def summarize_and_style(text: str, user_prompt: str, model: str = DEFAULT_MODEL,
         - 4-5 concise bullet points
 
         Output the slides text and a JSON style object in <STYLE_JSON>...</STYLE_JSON> with keys:
-        background_color, font, font_size, font_color, footer_text (optional), emoji_in_bullets (bool), logo_file (optional)
+        background_color, font, font_size, font_color, footer_text (optional), emoji_in_bullets (bool)
 
         Text:
         {chunk}
@@ -155,7 +155,7 @@ def make_ppt(slides, style=None, logo_file=None):
             p.font.size = Pt(12)
             p.font.color.rgb = RGBColor(150,150,150)
 
-        # Logo
+        # Logo: **Use only user-uploaded logo**
         if logo_file:
             slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
 
@@ -172,12 +172,12 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 ➜ 🖥️ Multi-doc to PPT (Fully Prompt-Driven)")
+st.title("📄 ➜ 🖥️ Multi-doc to PPT (Prompt-Driven + Logo Support)")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
     "Design & Styling Instructions",
-    "Example:\n- Background: dark blue (#003366)\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets\n- Include logo: logo.png"
+    "Example:\n- Background: dark blue (#003366)\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets\n- Include logo: (upload below)"
 )
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
@@ -190,5 +190,6 @@ if files and st.button("Generate PPT"):
         all_slides.extend(summaries)
         final_style.update(style)
 
+    # Always prioritize user-uploaded logo
     pptx_bytes = make_ppt(all_slides, style=final_style, logo_file=logo if logo else None)
     st.download_button("⬇️ Download PPTX", pptx_bytes, file_name="auto_ppt.pptx")
