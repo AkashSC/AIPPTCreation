@@ -5,6 +5,7 @@ from docx import Document
 from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
 from groq import Groq
 
 # ------------------------------
@@ -110,7 +111,6 @@ def parse_style_from_prompt(prompt: str):
 # Robust hex/named color to RGB
 # ------------------------------
 def hex_to_rgb_safe(color_str):
-    """Convert hex (#RRGGBB) or known color name to RGBColor, fallback white."""
     named_colors = {
         "dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00",
         "yellow":"#FFFF00","black":"#000000","white":"#FFFFFF",
@@ -175,7 +175,7 @@ def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3
     return slides
 
 # ------------------------------
-# PPT generator
+# PPT generator with rectangle background
 # ------------------------------
 def make_ppt(slides, style=None, logo_file=None):
     prs = Presentation()
@@ -187,19 +187,23 @@ def make_ppt(slides, style=None, logo_file=None):
     emoji = style.get("emoji_in_bullets", False)
     footer_text = style.get("footer_text", "")
 
-    # Title slide
-    title_slide = prs.slides.add_slide(prs.slide_layouts[0])
-    title_slide.shapes.title.text = "Auto-generated PPT"
-    title_slide.placeholders[1].text = "via Groq + Agentic AI"
-    fill = title_slide.background.fill
-    fill.solid()
-    fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
+    # Add slides
+    for s_idx, s in enumerate(slides):
+        slide = prs.slides.add_slide(prs.slide_layouts[1] if s_idx>0 else prs.slide_layouts[0])
 
-    # Content slides
-    for s in slides:
-        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        # Background as full rectangle
+        rect = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height
+        )
+        rect.fill.solid()
+        rect.fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
+        rect.line.fill.background()  # no border
+        rect.z_order = 0  # send to back
+
+        # Title
         slide.shapes.title.text = clean_text(s["title"])
 
+        # Content
         tf = slide.placeholders[1].text_frame
         tf.clear()
         for b in s["bullets"]:
@@ -226,11 +230,6 @@ def make_ppt(slides, style=None, logo_file=None):
         if logo_file:
             slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
 
-        # Background
-        fill = slide.background.fill
-        fill.solid()
-        fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
-
     out = io.BytesIO()
     prs.save(out)
     out.seek(0)
@@ -239,7 +238,7 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 Documents to PPT Conversion")
+st.title("📄 ➜ 🖥️ Multi-doc to PPT (Prompt-Driven + Logo + Full Colors)")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
