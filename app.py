@@ -46,7 +46,6 @@ def extract_text(uploaded_file):
 # Cleanup helper
 # ------------------------------
 def clean_text(text: str) -> str:
-    # remove HTML-like tags e.g. <font>, <b>, <i>
     return re.sub(r"<[^>]+>", "", text).strip()
 
 # ------------------------------
@@ -58,17 +57,57 @@ def simple_local_summary(text: str, max_sentences: int = 4) -> str:
     return " ".join(sentences[:max_sentences]) or t[:200]
 
 # ------------------------------
-# Summarizer + Style extraction
+# Parse user prompt into style
+# ------------------------------
+COLOR_MAP = {
+    "blue": "#003366", "dark blue": "#003366", "black": "#000000", "white": "#FFFFFF",
+    "green": "#008000", "red": "#FF0000", "yellow": "#FFCC00", "gray": "#808080",
+    "dark": "#333333", "light": "#F8F8F8", "orange": "#FF8C00", "purple": "#800080"
+}
+
+def parse_user_prompt(prompt: str):
+    style = {"background_color": "#FFFFFF", "font": "Arial", "font_size": 18, "font_color": "#000000", "emoji_in_bullets": False}
+    prompt_l = (prompt or "").lower()
+
+    # Background color
+    for name, hx in COLOR_MAP.items():
+        if name in prompt_l:
+            style["background_color"] = hx
+            style["font_color"] = "#FFFFFF" if name in ("blue","dark blue","black","dark","purple") else "#000000"
+            break
+
+    # Font
+    for f in ["Arial","Calibri","Times New Roman","Helvetica","Comic Sans MS","Verdana"]:
+        if f.lower() in prompt_l:
+            style["font"] = f
+            break
+
+    # Font size
+    if "large" in prompt_l or "big" in prompt_l:
+        style["font_size"] = 20
+    if "small" in prompt_l:
+        style["font_size"] = 12
+    if m := re.search(r'font ?size ?[:= ]?(\d{2})', prompt_l):
+        try:
+            style["font_size"] = int(m.group(1))
+        except:
+            pass
+
+    # Emojis
+    if "emoji" in prompt_l or "emojis" in prompt_l:
+        style["emoji_in_bullets"] = True
+
+    return style
+
+# ------------------------------
+# Summarizer + Groq style extraction
 # ------------------------------
 def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODEL, max_chunk_chars=3000):
     slides, style = [], {}
     if not text.strip():
         return [{"title": "Empty Document", "bullets": ["No extractable text"]}], style
 
-    if len(text) > max_chunk_chars:
-        chunks = [text[i:i+max_chunk_chars] for i in range(0, len(text), max_chunk_chars)]
-    else:
-        chunks = [text]
+    chunks = [text[i:i+max_chunk_chars] for i in range(0, len(text), max_chunk_chars)] if len(text) > max_chunk_chars else [text]
 
     for idx, chunk in enumerate(chunks, start=1):
         prompt = f"""
@@ -103,7 +142,7 @@ def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODE
         except Exception:
             out = simple_local_summary(chunk)
 
-        # Parse style JSON if present
+        # Parse Groq JSON style
         if "<STYLE_JSON>" in out and "</STYLE_JSON>" in out:
             style_block = out.split("<STYLE_JSON>")[1].split("</STYLE_JSON>")[0]
             try:
@@ -121,26 +160,24 @@ def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODE
     return slides, style
 
 # ------------------------------
-# PPT generation with style + logo
+# PPT generator
 # ------------------------------
 def make_ppt(slides, style=None, logo_file=None):
     prs = Presentation()
 
-    # Default style
     bg_color = style.get("background_color", "#FFFFFF") if style else "#FFFFFF"
     font_name = style.get("font", "Arial") if style else "Arial"
     font_size = style.get("font_size", 18) if style else 18
     font_color = style.get("font_color", "#000000") if style else "#000000"
+    emoji = style.get("emoji_in_bullets", False)
 
     # Title slide
     title_slide = prs.slides.add_slide(prs.slide_layouts[0])
     title_slide.shapes.title.text = "Auto-generated PPT"
     title_slide.placeholders[1].text = "via Groq + Agentic AI"
-
-    # Apply background to title slide
     fill = title_slide.background.fill
     fill.solid()
-    fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#", ""))
+    fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
 
     # Content slides
     for s in slides:
@@ -150,24 +187,26 @@ def make_ppt(slides, style=None, logo_file=None):
         tf = slide.placeholders[1].text_frame
         tf.clear()
         for b in s["bullets"]:
+            if emoji:
+                b = "👉 " + b
             p = tf.add_paragraph()
             p.text = clean_text(b)
             p.level = 0
             p.font.size = Pt(font_size)
             p.font.name = font_name
             try:
-                p.font.color.rgb = RGBColor.from_string(font_color.replace("#", ""))
+                p.font.color.rgb = RGBColor.from_string(font_color.replace("#",""))
             except:
                 pass
 
-        # Inject logo bottom-right
+        # Inject logo
         if logo_file:
             slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
 
         # Background color
         fill = slide.background.fill
         fill.solid()
-        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#", ""))
+        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
 
     out = io.BytesIO()
     prs.save(out)
@@ -182,19 +221,23 @@ st.title("📄 ➜ 🖥️ Multi-doc to PPT (Groq Agentic AI + Custom Design)")
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
     "Design Instructions (optional)",
-    "Examples:\n- Use dark blue background and white text\n- Font: Calibri, size 20\n- Add corporate branding feel\n- Make headings bold and professional"
+    "Examples:\n- Use dark blue background and white text\n- Font: Calibri, size 20\n- Add corporate branding feel\n- Emojis in bullets"
 )
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
 
 if files and st.button("Generate PPT"):
-    all_slides, final_style = [], {}
+    all_slides, groq_style = [], {}
     for f in files:
         text = extract_text(f)
         summaries, style = summarize_and_style(text, design_prompt, model=model_choice)
         all_slides.extend(summaries)
-        final_style.update(style)
-        st.success(f"Processed {f.name} → {len(summaries)} slides")
+        groq_style.update(style)
+
+    # Parse user prompt and override Groq style
+    user_style = parse_user_prompt(design_prompt)
+    final_style = groq_style.copy()
+    final_style.update(user_style)
 
     pptx_bytes = make_ppt(all_slides, style=final_style, logo_file=logo if logo else None)
     st.download_button("⬇️ Download PPTX", pptx_bytes, file_name="auto_ppt.pptx")
