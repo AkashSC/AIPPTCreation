@@ -10,7 +10,7 @@ from groq import Groq
 # Config
 # ------------------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-DEFAULT_MODEL = "llama3-8b-8192"
+DEFAULT_MODEL = "llama-3.1-8b-instant"
 client = Groq(api_key=GROQ_API_KEY)
 
 # ------------------------------
@@ -129,7 +129,7 @@ def make_ppt(slides):
 st.title("📄 ➜ 🖥️ Multi-doc to PPT (Groq Agentic AI)")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
-model_choice = st.selectbox("Groq model", ["llama3-8b-8192","gemma2-9b-it","mixtral-8x7b"])
+model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
 
 if files and st.button("Generate PPT"):
     all_slides = []
