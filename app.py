@@ -56,7 +56,8 @@ def parse_bullets(lines):
             continue
 
         # Remove "Bullet Points:" or variations like **, :
-        line_clean = re.sub(r'(?i)^Bullet Points[:\*\s]*', '', line_clean)
+        #line_clean = re.sub(r'(?i)^Bullet Points[:\*\s]*', '', line_clean)
+        line_clean = re.sub(r'(?i)^\**\s*Bullet\s*Points[:\*\s]*\**', '', line_clean)
 
         # Skip generic headers
         if re.match(r'^(bullet|points|summary|slide)', line_clean.lower()):
