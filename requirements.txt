@@ -3,3 +3,4 @@ pdfplumber
 python-docx
 python-pptx
 groq
+reportlab
