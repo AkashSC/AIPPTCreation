@@ -1,13 +1,11 @@
-import io, os, re
+import io, os, re, json
 import streamlit as st
 import pdfplumber
 from docx import Document
 from pptx import Presentation
-from pptx.util import Pt, Inches
+from pptx.util import Pt
 from pptx.dml.color import RGBColor
 from groq import Groq
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
 
 # ------------------------------
 # Config
@@ -45,82 +43,80 @@ def extract_text(uploaded_file):
         return extract_text_from_txt(data)
 
 # ------------------------------
-# Simple fallback
+# LLM-driven summarizer + style
 # ------------------------------
-def simple_local_summary(text: str, max_sentences: int = 4) -> str:
-    t = re.sub(r"\s+", " ", text).strip()
-    sentences = re.split(r'(?<=[.!?])\s+', t)
-    return " ".join(sentences[:max_sentences]) or t[:200]
+def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODEL):
+    """
+    Uses LLM to return slides + styling instructions.
+    """
+    prompt = f"""
+    You are a presentation designer.
+    Summarize this text into PowerPoint slides.
+    - Give 1 short title and 4-5 concise bullet points per slide.
+    - Follow these design prompts for styling: {design_prompt}
+    - Also return a JSON block with design settings (background_color, font, font_size, font_color).
+    
+    Example output format:
+    ---
+    Slide Title: Example
+    - Bullet 1
+    - Bullet 2
+    
+    STYLE_JSON:
+    {{"background_color":"#003366","font":"Calibri","font_size":18,"font_color":"#FFFFFF"}}
+    ---
+    Text:
+    {text}
+    """
+
+    try:
+        chat = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=800
+        )
+        return chat.choices[0].message.content
+    except Exception as e:
+        return f"Slide Title: Error\n- Could not summarize\nSTYLE_JSON: {{\"background_color\":\"#FFFFFF\",\"font\":\"Arial\",\"font_size\":14,\"font_color\":\"#000000\"}}"
 
 # ------------------------------
-# Parse style instructions
+# Extract slides + style JSON
 # ------------------------------
-def parse_styles(instructions: str):
-    styles = {"font": "Arial", "font_size": 14, "bg_color": RGBColor(255, 255, 255), "font_color": RGBColor(0, 0, 0)}
-
-    if "blue background" in instructions.lower():
-        styles["bg_color"] = RGBColor(0, 102, 204)
-    elif "black background" in instructions.lower():
-        styles["bg_color"] = RGBColor(0, 0, 0)
-        styles["font_color"] = RGBColor(255, 255, 255)
-    elif "green background" in instructions.lower():
-        styles["bg_color"] = RGBColor(0, 153, 0)
-
-    if "arial" in instructions.lower():
-        styles["font"] = "Arial"
-    elif "times" in instructions.lower():
-        styles["font"] = "Times New Roman"
-    elif "calibri" in instructions.lower():
-        styles["font"] = "Calibri"
-
-    if "large font" in instructions.lower():
-        styles["font_size"] = 20
-    elif "small font" in instructions.lower():
-        styles["font_size"] = 12
-
-    return styles
-
-# ------------------------------
-# Agentic summarizer
-# ------------------------------
-def summarize_with_agent(text: str, extra_instructions="", model: str = DEFAULT_MODEL, max_chunk_chars=3000):
+def parse_slides_and_style(output: str):
     slides = []
-    if not text.strip():
-        return [{"title": "Empty Document", "bullets": ["No extractable text"]}]
+    style = {"background_color": "#FFFFFF", "font": "Arial", "font_size": 14, "font_color": "#000000"}
 
-    chunks = [text[i:i+max_chunk_chars] for i in range(0, len(text), max_chunk_chars)] if len(text) > max_chunk_chars else [text]
+    parts = output.split("STYLE_JSON:")
+    slide_text = parts[0].strip()
+    style_text = parts[1].strip() if len(parts) > 1 else ""
 
-    for idx, chunk in enumerate(chunks, start=1):
-        prompt = f"""
-        Summarize this text into a PowerPoint slide.
-        Provide 1 short title + 4-5 concise bullet points.
-        Apply these style instructions if possible: {extra_instructions}
-        Text:
-        {chunk}
-        """
-        out = None
-        try:
-            chat = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=400
-            )
-            out = chat.choices[0].message.content
-        except Exception:
-            out = simple_local_summary(chunk)
+    # Parse slides
+    for block in re.split(r"Slide Title:", slide_text):
+        block = block.strip()
+        if not block:
+            continue
+        lines = block.splitlines()
+        title = lines[0].strip()
+        bullets = [l.lstrip("-•* ").strip() for l in lines[1:] if l.strip()]
+        slides.append({"title": title, "bullets": bullets})
 
-        lines = [l.strip() for l in out.splitlines() if l.strip()]
-        title = lines[0] if lines else f"Part {idx}"
-        bullets = [l.lstrip("-•* ").strip() for l in lines[1:]] or [out]
-        slides.append({"title": title, "bullets": bullets[:6]})
+    # Parse style JSON
+    try:
+        style.update(json.loads(style_text))
+    except:
+        pass
 
-    return slides
+    return slides, style
 
 # ------------------------------
-# PPT generation with styles
+# PPT generation
 # ------------------------------
-def make_ppt(slides, styles):
+def hex_to_rgb(hex_color: str):
+    hex_color = hex_color.lstrip("#")
+    return RGBColor(int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16))
+
+def make_ppt(slides, style):
     prs = Presentation()
     title_slide = prs.slides.add_slide(prs.slide_layouts[0])
     title_slide.shapes.title.text = "Auto-generated PPT"
@@ -129,17 +125,17 @@ def make_ppt(slides, styles):
     for s in slides:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
 
-        # Set background
+        # Set background color
         fill = slide.background.fill
         fill.solid()
-        fill.fore_color.rgb = styles["bg_color"]
+        fill.fore_color.rgb = hex_to_rgb(style.get("background_color", "#FFFFFF"))
 
         # Title
         title_shape = slide.shapes.title
         title_shape.text = s["title"]
-        title_shape.text_frame.paragraphs[0].font.name = styles["font"]
-        title_shape.text_frame.paragraphs[0].font.size = Pt(styles["font_size"] + 6)
-        title_shape.text_frame.paragraphs[0].font.color.rgb = styles["font_color"]
+        title_shape.text_frame.paragraphs[0].font.name = style.get("font", "Arial")
+        title_shape.text_frame.paragraphs[0].font.size = Pt(style.get("font_size", 14) + 6)
+        title_shape.text_frame.paragraphs[0].font.color.rgb = hex_to_rgb(style.get("font_color", "#000000"))
 
         # Bullets
         tf = slide.placeholders[1].text_frame
@@ -148,9 +144,9 @@ def make_ppt(slides, styles):
             p = tf.add_paragraph()
             p.text = b
             p.level = 0
-            p.font.name = styles["font"]
-            p.font.size = Pt(styles["font_size"])
-            p.font.color.rgb = styles["font_color"]
+            p.font.name = style.get("font", "Arial")
+            p.font.size = Pt(style.get("font_size", 14))
+            p.font.color.rgb = hex_to_rgb(style.get("font_color", "#000000"))
 
     out = io.BytesIO()
     prs.save(out)
@@ -158,46 +154,31 @@ def make_ppt(slides, styles):
     return out.read()
 
 # ------------------------------
-# PDF merge
-# ------------------------------
-def make_pdf(all_text: str) -> bytes:
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    y = height - 50
-    for line in all_text.splitlines():
-        if y < 50:
-            c.showPage()
-            y = height - 50
-        c.drawString(40, y, line[:1000])
-        y -= 15
-    c.save()
-    buffer.seek(0)
-    return buffer.read()
-
-# ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 ➜ Multi-doc to PPT + PDF (Agentic AI)")
+st.title("📄 ➜ 🖥️ Multi-doc to PPT (Groq Agentic AI)")
+st.markdown("""
+**Examples for design prompts:**
+- "Blue gradient background, white bold titles, Calibri font"
+- "Dark theme, yellow bullet points, Comic Sans font, large text"
+- "Minimalist white background, Helvetica, black text, small font"
+- "Add emojis to bullets, playful design"
+""")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
-extra_instructions = st.text_area("Style Instructions (e.g., 'blue background, Arial, large font')", "")
+design_prompt = st.text_area("Enter your design instructions", "Blue background, Arial font, large text")
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
 
-if files and st.button("Generate Outputs"):
+if files and st.button("Generate PPT"):
     all_slides = []
-    merged_text = ""
+    final_style = None
+
     for f in files:
         text = extract_text(f)
-        merged_text += f"\n\n--- {f.name} ---\n\n{text}\n\n"
-        summaries = summarize_with_agent(text, extra_instructions, model=model_choice)
-        all_slides.extend(summaries)
-        st.success(f"Processed {f.name} → {len(summaries)} slides")
+        raw_output = summarize_and_style(text, design_prompt, model=model_choice)
+        slides, style = parse_slides_and_style(raw_output)
+        all_slides.extend(slides)
+        final_style = style  # take last style block
 
-    styles = parse_styles(extra_instructions)
-
-    pptx_bytes = make_ppt(all_slides, styles)
+    pptx_bytes = make_ppt(all_slides, final_style or {})
     st.download_button("⬇️ Download PPTX", pptx_bytes, file_name="auto_ppt.pptx")
-
-    pdf_bytes = make_pdf(merged_text)
-    st.download_button("⬇️ Download Merged PDF", pdf_bytes, file_name="merged.pdf")
