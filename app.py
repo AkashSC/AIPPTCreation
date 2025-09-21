@@ -64,10 +64,8 @@ def parse_style_from_prompt(prompt: str):
     prompt_l = prompt.lower()
 
     # Background color
-    colors = {
-        "dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00","yellow":"#FFFF00",
-        "black":"#000000","white":"#FFFFFF","green":"#008000","red":"#FF0000"
-    }
+    colors = {"dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00","yellow":"#FFFF00",
+              "black":"#000000","white":"#FFFFFF","green":"#008000","red":"#FF0000"}
     for k,v in colors.items():
         if k in prompt_l:
             style["background_color"] = v
@@ -105,35 +103,6 @@ def parse_style_from_prompt(prompt: str):
         style["footer_text"] = m.group(1).strip()
 
     return style
-
-# ------------------------------
-# Robust hex/named color to RGB
-# ------------------------------
-def hex_to_rgb_safe(color_str):
-    """Convert hex (#RRGGBB) or known color name to RGBColor, fallback white."""
-    named_colors = {
-        "dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00",
-        "yellow":"#FFFF00","black":"#000000","white":"#FFFFFF",
-        "green":"#008000","red":"#FF0000"
-    }
-
-    color_str = color_str.strip().lower()
-    if color_str in named_colors:
-        color_str = named_colors[color_str]
-
-    if color_str.startswith("#"):
-        color_str = color_str[1:]
-
-    if len(color_str) != 6:
-        return RGBColor(255,255,255)
-
-    try:
-        r = int(color_str[0:2], 16)
-        g = int(color_str[2:4], 16)
-        b = int(color_str[4:6], 16)
-        return RGBColor(r,g,b)
-    except:
-        return RGBColor(255,255,255)
 
 # ------------------------------
 # Generate slide text using Groq
@@ -193,7 +162,7 @@ def make_ppt(slides, style=None, logo_file=None):
     title_slide.placeholders[1].text = "via Groq + Agentic AI"
     fill = title_slide.background.fill
     fill.solid()
-    fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
+    fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
 
     # Content slides
     for s in slides:
@@ -211,7 +180,7 @@ def make_ppt(slides, style=None, logo_file=None):
             p.font.size = Pt(font_size)
             p.font.name = font_name
             try:
-                p.font.color.rgb = hex_to_rgb_safe(font_color)
+                p.font.color.rgb = RGBColor.from_string(font_color.replace("#",""))
             except:
                 pass
 
@@ -229,7 +198,7 @@ def make_ppt(slides, style=None, logo_file=None):
         # Background
         fill = slide.background.fill
         fill.solid()
-        fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
+        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
 
     out = io.BytesIO()
     prs.save(out)
@@ -239,12 +208,12 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 Files To PPT Conversion")
+st.title("📄 Files to PPT Conversion)")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
     "Design & Styling Instructions",
-    "Example:\n- Background: green\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
+    "Example:\n- Background: dark blue (#003366)\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
 )
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
