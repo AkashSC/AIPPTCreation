@@ -3,7 +3,7 @@ import streamlit as st
 import pdfplumber
 from docx import Document
 from pptx import Presentation
-from pptx.util import Pt
+from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
 from groq import Groq
 
@@ -43,34 +43,85 @@ def extract_text(uploaded_file):
         return extract_text_from_txt(data)
 
 # ------------------------------
-# Simple local fallback
+# Helpers
 # ------------------------------
-def simple_local_summary(text: str, max_sentences: int = 4) -> str:
-    t = re.sub(r"\s+", " ", text).strip()
-    sentences = re.split(r'(?<=[.!?])\s+', t)
-    return " ".join(sentences[:max_sentences]) or t[:200]
+def clean_text(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+def parse_bullets(lines):
+    bullets = []
+    for line in lines:
+        line_clean = clean_text(line.strip())
+        if not line_clean:
+            continue
+
+        # Remove "Bullet Points:" or variations like **, :
+        line_clean = re.sub(r'(?i)^Bullet Points[:\*\s]*', '', line_clean)
+
+        # Skip generic headers
+        if re.match(r'^(bullet|points|summary|slide)', line_clean.lower()):
+            continue
+
+        # Remove leading dashes, numbers, bullets
+        line_clean = re.sub(r'^(\-|\*|•|\d+\.)\s*', '', line_clean)
+
+        if line_clean:
+            bullets.append(line_clean)
+    return bullets
+
+def parse_style_from_prompt(prompt: str):
+    style = {
+        "background_color": "#FFFFFF",
+        "font": "Arial",
+        "font_size": 18,
+        "font_color": "#000000",
+        "footer_text": ""
+    }
+
+    prompt_l = prompt.lower()
+
+    # Background color mapping
+    colors = {"dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00",
+              "yellow":"#FFFF00","black":"#000000","white":"#FFFFFF",
+              "green":"#008000","red":"#FF0000"}
+    for k,v in colors.items():
+        if k in prompt_l:
+            style["background_color"] = v
+            break
+
+    # Font family
+    fonts = ["arial","calibri","times new roman","helvetica","verdana"]
+    for f in fonts:
+        if f.lower() in prompt_l:
+            style["font"] = f
+            break
+
+    # Font size
+    m = re.search(r'size[:= ]?(\d+)', prompt_l)
+    if m:
+        style["font_size"] = int(m.group(1))
+    elif "large" in prompt_l or "big" in prompt_l:
+        style["font_size"] = 20
+    elif "small" in prompt_l:
+        style["font_size"] = 12
+
+    # Font color
+    for k,v in colors.items():
+        if f"color {k}" in prompt_l:
+            style["font_color"] = v
+            break
+
+    # Footer
+    m = re.search(r'footer[:= ]?(.+)', prompt_l)
+    if m:
+        style["footer_text"] = m.group(1).strip()
+
+    return style
 
 # ------------------------------
-# Clean unwanted lines
+# AI Summarizer
 # ------------------------------
-def clean_lines(lines):
-    cleaned = []
-    for l in lines:
-        if re.match(r"^\*?Bullet Points[:：]?\**", l, re.IGNORECASE):
-            continue
-        if "Bullet Points" in l:
-            continue
-        # remove emojis and stray ** markers
-        l = re.sub(r"[^\w\s,.!?-]", "", l)
-        l = l.replace("**", "").strip()
-        if l:
-            cleaned.append(l)
-    return cleaned
-
-# ------------------------------
-# Agentic summarizer
-# ------------------------------
-def summarize_with_agent(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3000, user_prompt: str = ""):
+def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3000):
     slides = []
     if not text.strip():
         return [{"title": "Empty Document", "bullets": ["No extractable text"]}]
@@ -78,60 +129,87 @@ def summarize_with_agent(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=
     chunks = [text[i:i+max_chunk_chars] for i in range(0, len(text), max_chunk_chars)] if len(text) > max_chunk_chars else [text]
 
     for idx, chunk in enumerate(chunks, start=1):
-        base_prompt = f"""
-        Summarize this text into a PowerPoint slide.
-        Give 1 short title and 4-5 concise bullet points.
-        {f"Apply these design/custom instructions: {user_prompt}" if user_prompt else ""}
+        prompt = f"""
+        Summarize this text into a PowerPoint slide:
+        - 1 short title
+        - 4-5 concise bullet points
+
         Text:
         {chunk}
         """
+
         out = None
         try:
             chat = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": base_prompt}],
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=400
             )
             out = chat.choices[0].message.content
         except Exception:
-            out = simple_local_summary(chunk)
+            out = chunk[:200]
 
-        lines = [l.strip() for l in out.splitlines() if l.strip()]
-        lines = clean_lines(lines)
+        lines = [clean_text(l.strip()) for l in out.splitlines() if l.strip()]
         title = lines[0] if lines else f"Part {idx}"
-        bullets = lines[1:] if len(lines) > 1 else [out]
+        bullets = parse_bullets(lines[1:]) or [clean_text(out)]
         slides.append({"title": title, "bullets": bullets[:6]})
 
     return slides
 
 # ------------------------------
-# PPT generation
+# PPT Generator
 # ------------------------------
-def make_ppt(slides, user_logo=None):
+def make_ppt(slides, style=None, logo_file=None):
     prs = Presentation()
+
+    bg_color = style.get("background_color", "#FFFFFF")
+    font_name = style.get("font", "Arial")
+    font_size = style.get("font_size", 18)
+    font_color = style.get("font_color", "#000000")
+    footer_text = style.get("footer_text", "")
+
+    # Title slide
     title_slide = prs.slides.add_slide(prs.slide_layouts[0])
     title_slide.shapes.title.text = "Auto-generated PPT"
     title_slide.placeholders[1].text = "via Groq + Agentic AI"
+    fill = title_slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
 
-    if user_logo:
-        left = top = Pt(10)
-        try:
-            slide.shapes.add_picture(user_logo, left, top, height=Pt(40))
-        except Exception:
-            pass
-
+    # Content slides
     for s in slides:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = s["title"]
+        slide.shapes.title.text = clean_text(s["title"])
+
         tf = slide.placeholders[1].text_frame
         tf.clear()
         for b in s["bullets"]:
             p = tf.add_paragraph()
-            p.text = b
+            p.text = clean_text(b)
             p.level = 0
-            p.font.size = Pt(14)
-            p.font.color.rgb = RGBColor(0, 0, 0)
+            p.font.size = Pt(font_size)
+            p.font.name = font_name
+            try:
+                p.font.color.rgb = RGBColor.from_string(font_color.replace("#",""))
+            except:
+                pass
+
+        # Footer
+        if footer_text:
+            p = tf.add_paragraph()
+            p.text = clean_text(footer_text)
+            p.font.size = Pt(12)
+            p.font.color.rgb = RGBColor(150,150,150)
+
+        # Logo
+        if logo_file:
+            slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
+
+        # Background
+        fill = slide.background.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
 
     out = io.BytesIO()
     prs.save(out)
@@ -141,25 +219,24 @@ def make_ppt(slides, user_logo=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 ➜ 🖥️ Multi-doc to PPT (Groq Agentic AI)")
+st.title("📄 Files to PPT Convertor")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
-user_prompt = st.text_area("Optional: Enter custom design/content prompts (e.g., 'Dark green background, Arial font, corporate style')", "")
-user_logo = st.file_uploader("Optional: Upload a logo", type=["png","jpg","jpeg"])
+
+design_prompt = st.text_area(
+    "Design & Styling Instructions",
+    "Example:\n- Background: dark blue\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential"
+)
+
+logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 
 if files and st.button("Generate PPT"):
     all_slides = []
     for f in files:
         text = extract_text(f)
-        summaries = summarize_with_agent(text, user_prompt=user_prompt)
-        all_slides.extend(summaries)
-        st.success(f"Processed {f.name} → {len(summaries)} slides")
+        slides = generate_slide_text(text, DEFAULT_MODEL)
+        all_slides.extend(slides)
 
-    logo_path = None
-    if user_logo:
-        logo_path = f"temp_logo.{user_logo.name.split('.')[-1]}"
-        with open(logo_path, "wb") as f:
-            f.write(user_logo.read())
-
-    pptx_bytes = make_ppt(all_slides, user_logo=logo_path if user_logo else None)
+    style = parse_style_from_prompt(design_prompt)
+    pptx_bytes = make_ppt(all_slides, style=style, logo_file=logo if logo else None)
     st.download_button("⬇️ Download PPTX", pptx_bytes, file_name="auto_ppt.pptx")
