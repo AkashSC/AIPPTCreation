@@ -1,4 +1,4 @@
-import io, os, re, json
+import io, os, re
 import streamlit as st
 import pdfplumber
 from docx import Document
@@ -49,29 +49,76 @@ def clean_text(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text).strip()
 
 # ------------------------------
-# Summarize and get design from Groq
+# Parse style from user prompt
 # ------------------------------
-def summarize_and_style(text: str, user_prompt: str, model: str = DEFAULT_MODEL, max_chunk_chars=3000):
-    slides, style = [], {}
+def parse_style_from_prompt(prompt: str):
+    style = {
+        "background_color": "#FFFFFF",
+        "font": "Arial",
+        "font_size": 18,
+        "font_color": "#000000",
+        "emoji_in_bullets": False,
+        "footer_text": ""
+    }
 
+    prompt_l = prompt.lower()
+
+    # Background color
+    colors = {"dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00","yellow":"#FFFF00",
+              "black":"#000000","white":"#FFFFFF","green":"#008000","red":"#FF0000"}
+    for k,v in colors.items():
+        if k in prompt_l:
+            style["background_color"] = v
+            break
+
+    # Font
+    fonts = ["arial","calibri","times new roman","helvetica","comic sans ms","verdana"]
+    for f in fonts:
+        if f.lower() in prompt_l:
+            style["font"] = f
+            break
+
+    # Font size
+    m = re.search(r'size[:= ]?(\d+)', prompt_l)
+    if m:
+        style["font_size"] = int(m.group(1))
+    elif "large" in prompt_l or "big" in prompt_l:
+        style["font_size"] = 20
+    elif "small" in prompt_l:
+        style["font_size"] = 12
+
+    # Font color
+    for k,v in colors.items():
+        if f"color {k}" in prompt_l:
+            style["font_color"] = v
+            break
+
+    # Emojis
+    if "emoji" in prompt_l or "emojis" in prompt_l:
+        style["emoji_in_bullets"] = True
+
+    # Footer
+    m = re.search(r'footer[:= ]?(.+)', prompt_l)
+    if m:
+        style["footer_text"] = m.group(1).strip()
+
+    return style
+
+# ------------------------------
+# Generate slide text using Groq
+# ------------------------------
+def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3000):
+    slides = []
     if not text.strip():
-        return [{"title": "Empty Document", "bullets": ["No extractable text"]}], style
+        return [{"title": "Empty Document", "bullets": ["No extractable text"]}]
 
     chunks = [text[i:i+max_chunk_chars] for i in range(0, len(text), max_chunk_chars)] if len(text) > max_chunk_chars else [text]
 
     for idx, chunk in enumerate(chunks, start=1):
         prompt = f"""
-        You are generating a PowerPoint presentation from the text below.
-
-        User design instructions:
-        {user_prompt}
-
-        Summarize this chunk into 1 slide:
+        Summarize this text into a PowerPoint slide:
         - 1 short title
         - 4-5 concise bullet points
-
-        Output the slides text and a JSON style object in <STYLE_JSON>...</STYLE_JSON> with keys:
-        background_color, font, font_size, font_color, footer_text (optional), emoji_in_bullets (bool)
 
         Text:
         {chunk}
@@ -83,29 +130,18 @@ def summarize_and_style(text: str, user_prompt: str, model: str = DEFAULT_MODEL,
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=500
+                max_tokens=400
             )
             out = chat.choices[0].message.content
         except Exception:
-            out = clean_text(chunk[:200])  # fallback simple summary
+            out = chunk[:200]
 
-        # Parse style JSON
-        style_json = {}
-        if "<STYLE_JSON>" in out and "</STYLE_JSON>" in out:
-            try:
-                style_block = out.split("<STYLE_JSON>")[1].split("</STYLE_JSON>")[0]
-                style_json = json.loads(style_block)
-                style.update(style_json)
-            except:
-                pass
-
-        # Parse slides text
-        lines = [clean_text(l.strip()) for l in out.splitlines() if l.strip() and not l.startswith("<STYLE_JSON>")]
-        title = clean_text(lines[0]) if lines else f"Part {idx}"
-        bullets = [clean_text(l.lstrip("-•* ").strip()) for l in lines[1:] if not l.startswith("STYLE_JSON")] or [clean_text(out)]
+        lines = [clean_text(l.strip()) for l in out.splitlines() if l.strip()]
+        title = lines[0] if lines else f"Part {idx}"
+        bullets = [clean_text(l.lstrip("-•* ").strip()) for l in lines[1:]] or [clean_text(out)]
         slides.append({"title": title, "bullets": bullets[:6]})
 
-    return slides, style
+    return slides
 
 # ------------------------------
 # PPT generator
@@ -113,10 +149,10 @@ def summarize_and_style(text: str, user_prompt: str, model: str = DEFAULT_MODEL,
 def make_ppt(slides, style=None, logo_file=None):
     prs = Presentation()
 
-    bg_color = style.get("background_color", "#FFFFFF") if style else "#FFFFFF"
-    font_name = style.get("font", "Arial") if style else "Arial"
-    font_size = style.get("font_size", 18) if style else 18
-    font_color = style.get("font_color", "#000000") if style else "#000000"
+    bg_color = style.get("background_color", "#FFFFFF")
+    font_name = style.get("font", "Arial")
+    font_size = style.get("font_size", 18)
+    font_color = style.get("font_color", "#000000")
     emoji = style.get("emoji_in_bullets", False)
     footer_text = style.get("footer_text", "")
 
@@ -155,11 +191,11 @@ def make_ppt(slides, style=None, logo_file=None):
             p.font.size = Pt(12)
             p.font.color.rgb = RGBColor(150,150,150)
 
-        # Logo: **Use only user-uploaded logo**
+        # Logo
         if logo_file:
             slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
 
-        # Background color
+        # Background
         fill = slide.background.fill
         fill.solid()
         fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
@@ -172,24 +208,23 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 ➜ 🖥️ Multi-doc to PPT (Prompt-Driven + Logo Support)")
+st.title("📄 ➜ 🖥️ Multi-doc to PPT (Fully Prompt-Driven)")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
     "Design & Styling Instructions",
-    "Example:\n- Background: dark blue (#003366)\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets\n- Include logo: (upload below)"
+    "Example:\n- Background: dark blue (#003366)\n- Font: Calibri, size 20, color white\n- Footer: Company Confidential\n- Add emojis to bullets"
 )
 logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
 model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
 
 if files and st.button("Generate PPT"):
-    all_slides, final_style = [], {}
+    all_slides = []
     for f in files:
         text = extract_text(f)
-        summaries, style = summarize_and_style(text, design_prompt, model_choice)
-        all_slides.extend(summaries)
-        final_style.update(style)
+        slides = generate_slide_text(text, model_choice)
+        all_slides.extend(slides)
 
-    # Always prioritize user-uploaded logo
-    pptx_bytes = make_ppt(all_slides, style=final_style, logo_file=logo if logo else None)
+    style = parse_style_from_prompt(design_prompt)
+    pptx_bytes = make_ppt(all_slides, style=style, logo_file=logo if logo else None)
     st.download_button("⬇️ Download PPTX", pptx_bytes, file_name="auto_ppt.pptx")
