@@ -63,7 +63,6 @@ def parse_style_from_prompt(prompt: str):
 
     prompt_l = prompt.lower()
 
-    # Background color
     colors = {"dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00","yellow":"#FFFF00",
               "black":"#000000","white":"#FFFFFF","green":"#008000","red":"#FF0000"}
     for k,v in colors.items():
@@ -71,14 +70,12 @@ def parse_style_from_prompt(prompt: str):
             style["background_color"] = v
             break
 
-    # Font
     fonts = ["arial","calibri","times new roman","helvetica","comic sans ms","verdana"]
     for f in fonts:
         if f.lower() in prompt_l:
             style["font"] = f
             break
 
-    # Font size
     m = re.search(r'size[:= ]?(\d+)', prompt_l)
     if m:
         style["font_size"] = int(m.group(1))
@@ -87,22 +84,56 @@ def parse_style_from_prompt(prompt: str):
     elif "small" in prompt_l:
         style["font_size"] = 12
 
-    # Font color
     for k,v in colors.items():
         if f"color {k}" in prompt_l:
             style["font_color"] = v
             break
 
-    # Emojis
     if "emoji" in prompt_l or "emojis" in prompt_l:
         style["emoji_in_bullets"] = True
 
-    # Footer
     m = re.search(r'footer[:= ]?(.+)', prompt_l)
     if m:
         style["footer_text"] = m.group(1).strip()
 
     return style
+
+# ------------------------------
+# Robust hex/named color to RGB
+# ------------------------------
+def hex_to_rgb_safe(color_str):
+    named_colors = {"dark blue":"#003366","blue":"#3366CC","dark yellow":"#FFCC00",
+                    "yellow":"#FFFF00","black":"#000000","white":"#FFFFFF",
+                    "green":"#008000","red":"#FF0000"}
+    color_str = color_str.strip().lower()
+    if color_str in named_colors:
+        color_str = named_colors[color_str]
+    if color_str.startswith("#"):
+        color_str = color_str[1:]
+    if len(color_str) != 6:
+        return RGBColor(255,255,255)
+    try:
+        r = int(color_str[0:2], 16)
+        g = int(color_str[2:4], 16)
+        b = int(color_str[4:6], 16)
+        return RGBColor(r,g,b)
+    except:
+        return RGBColor(255,255,255)
+
+# ------------------------------
+# Parse bullets properly
+# ------------------------------
+def parse_bullets(lines):
+    bullets = []
+    for line in lines:
+        line_clean = clean_text(line.strip())
+        if line_clean.lower().startswith("bullet") or line_clean.lower().startswith("points"):
+            continue
+        if line_clean.startswith(("-", "•", "*")):
+            line_clean = line_clean.lstrip("-•* ").strip()
+        if line_clean:
+            bullets.append(line_clean)
+    return bullets
 
 # ------------------------------
 # Generate slide text using Groq
@@ -111,9 +142,7 @@ def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3
     slides = []
     if not text.strip():
         return [{"title": "Empty Document", "bullets": ["No extractable text"]}]
-
     chunks = [text[i:i+max_chunk_chars] for i in range(0, len(text), max_chunk_chars)] if len(text) > max_chunk_chars else [text]
-
     for idx, chunk in enumerate(chunks, start=1):
         prompt = f"""
         Summarize this text into a PowerPoint slide:
@@ -123,7 +152,6 @@ def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3
         Text:
         {chunk}
         """
-
         out = None
         try:
             chat = client.chat.completions.create(
@@ -138,9 +166,8 @@ def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3
 
         lines = [clean_text(l.strip()) for l in out.splitlines() if l.strip()]
         title = lines[0] if lines else f"Part {idx}"
-        bullets = [clean_text(l.lstrip("-•* ").strip()) for l in lines[1:]] or [clean_text(out)]
+        bullets = parse_bullets(lines[1:]) or [clean_text(out)]
         slides.append({"title": title, "bullets": bullets[:6]})
-
     return slides
 
 # ------------------------------
@@ -148,7 +175,6 @@ def generate_slide_text(text: str, model: str = DEFAULT_MODEL, max_chunk_chars=3
 # ------------------------------
 def make_ppt(slides, style=None, logo_file=None):
     prs = Presentation()
-
     bg_color = style.get("background_color", "#FFFFFF")
     font_name = style.get("font", "Arial")
     font_size = style.get("font_size", 18)
@@ -160,15 +186,16 @@ def make_ppt(slides, style=None, logo_file=None):
     title_slide = prs.slides.add_slide(prs.slide_layouts[0])
     title_slide.shapes.title.text = "Auto-generated PPT"
     title_slide.placeholders[1].text = "via Groq + Agentic AI"
-    fill = title_slide.background.fill
-    fill.solid()
-    fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
+    title_slide.background.fill.solid()
+    title_slide.background.fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
 
     # Content slides
     for s in slides:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = clean_text(s["title"])
+        slide.background.fill.solid()
+        slide.background.fill.fore_color.rgb = hex_to_rgb_safe(bg_color)
 
+        slide.shapes.title.text = clean_text(s["title"])
         tf = slide.placeholders[1].text_frame
         tf.clear()
         for b in s["bullets"]:
@@ -179,26 +206,16 @@ def make_ppt(slides, style=None, logo_file=None):
             p.level = 0
             p.font.size = Pt(font_size)
             p.font.name = font_name
-            try:
-                p.font.color.rgb = RGBColor.from_string(font_color.replace("#",""))
-            except:
-                pass
+            p.font.color.rgb = hex_to_rgb_safe(font_color)
 
-        # Footer
         if footer_text:
             p = tf.add_paragraph()
             p.text = clean_text(footer_text)
             p.font.size = Pt(12)
             p.font.color.rgb = RGBColor(150,150,150)
 
-        # Logo
         if logo_file:
             slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
-
-        # Background
-        fill = slide.background.fill
-        fill.solid()
-        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#",""))
 
     out = io.BytesIO()
     prs.save(out)
@@ -208,7 +225,7 @@ def make_ppt(slides, style=None, logo_file=None):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("📄 Files to PPT Conversion)")
+st.title("📄 Files to PPT Conversion")
 
 files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
 design_prompt = st.text_area(
