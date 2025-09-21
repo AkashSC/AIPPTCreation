@@ -1,7 +1,4 @@
-import io
-import os
-import re
-import json
+import io, os, re, json
 import streamlit as st
 import pdfplumber
 from docx import Document
@@ -14,28 +11,26 @@ from groq import Groq
 # Config
 # ------------------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-DEFAULT_MODEL = "llama3-8b-8192"
+DEFAULT_MODEL = "llama-3.1-8b-instant"
 client = Groq(api_key=GROQ_API_KEY)
 
 # ------------------------------
-# Utility: text extraction
+# File extractors
 # ------------------------------
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     text_parts = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
-            txt = page.extract_text()
-            if txt:
+            if (txt := page.extract_text()):
                 text_parts.append(txt)
-    return "\n\n".join(text_parts).strip()
+    return "\n\n".join(text_parts)
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
     doc = Document(io.BytesIO(file_bytes))
-    paras = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
-    return "\n\n".join(paras).strip()
+    return "\n\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
 def extract_text_from_txt(file_bytes: bytes) -> str:
-    return file_bytes.decode("utf-8", errors="replace").strip()
+    return file_bytes.decode("utf-8", errors="replace")
 
 def extract_text(uploaded_file):
     data = uploaded_file.read()
@@ -48,155 +43,122 @@ def extract_text(uploaded_file):
         return extract_text_from_txt(data)
 
 # ------------------------------
-# Local summarizer fallback
+# Local fallback
 # ------------------------------
 def simple_local_summary(text: str, max_sentences: int = 4) -> str:
     t = re.sub(r"\s+", " ", text).strip()
     sentences = re.split(r'(?<=[.!?])\s+', t)
-    return " ".join(sentences[:max_sentences]) or (t[:200] + ("..." if len(t) > 200 else ""))
+    return " ".join(sentences[:max_sentences]) or t[:200]
 
 # ------------------------------
-# Style parsing helpers
+# Summarizer + Design extraction
 # ------------------------------
-COLOR_MAP = {
-    "blue": "#003366", "dark blue": "#003366", "black": "#000000", "white": "#FFFFFF",
-    "green": "#008000", "red": "#FF0000", "yellow": "#FFCC00", "gray": "#808080",
-    "dark": "#333333", "light": "#F8F8F8", "orange": "#FF8C00", "purple": "#800080"
-}
-FONT_OPTIONS = ["Arial", "Calibri", "Times New Roman", "Helvetica", "Comic Sans MS", "Verdana"]
+def summarize_and_style(text: str, design_prompt: str, model: str = DEFAULT_MODEL, max_chunk_chars=3000):
+    slides, style = [], {}
+    if not text.strip():
+        return [{"title": "Empty Document", "bullets": ["No extractable text"]}], style
 
-def parse_design_prompt(prompt: str):
-    prompt_l = (prompt or "").lower()
-    style = {"background_color": "#FFFFFF", "font": "Arial", "font_size": 14, "font_color": "#000000", "emoji_in_bullets": False}
+    if len(text) > max_chunk_chars:
+        chunks = [text[i:i+max_chunk_chars] for i in range(0, len(text), max_chunk_chars)]
+    else:
+        chunks = [text]
 
-    # hex color
-    found_hex = re.search(r'#([0-9a-fA-F]{6})', prompt)
-    if found_hex:
-        style["background_color"] = f"#{found_hex.group(1)}"
+    for idx, chunk in enumerate(chunks, start=1):
+        prompt = f"""
+        Summarize this text into a PowerPoint slide.
+        - Provide 1 short title
+        - 4-5 concise bullet points
+        Apply these style instructions if relevant: {design_prompt}
 
-    # color words
-    for name, hx in COLOR_MAP.items():
-        if name in prompt_l:
-            style["background_color"] = hx
-            style["font_color"] = "#FFFFFF" if name in ("blue","dark blue","black","dark","purple") else "#000000"
-            break
+        After the slides, output a JSON inside <STYLE_JSON>...</STYLE_JSON> with:
+        background_color (hex like "#003366"), font (string), font_size (int), font_color (hex).
 
-    # font
-    for f in FONT_OPTIONS:
-        if f.lower() in prompt_l:
-            style["font"] = f
-            break
+        Example output:
+        Slide Title: Example
+        - Bullet 1
+        - Bullet 2
 
-    # font size hints
-    if "large" in prompt_l or "big" in prompt_l:
-        style["font_size"] = 20
-    if "small" in prompt_l:
-        style["font_size"] = 12
-    if m := re.search(r'font ?size ?[:= ]?(\d{2})', prompt_l):
+        STYLE_JSON:
+        <STYLE_JSON>{{"background_color":"#003366","font":"Calibri","font_size":18,"font_color":"#FFFFFF"}}</STYLE_JSON>
+
+        Text:
+        {chunk}
+        """
+        out = None
         try:
-            style["font_size"] = int(m.group(1))
-        except:
-            pass
+            chat = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=500
+            )
+            out = chat.choices[0].message.content
+        except Exception:
+            out = simple_local_summary(chunk)
 
-    # emojis
-    if "emoji" in prompt_l or "emojis" in prompt_l:
-        style["emoji_in_bullets"] = True
+        # Parse output
+        style_json = None
+        if "<STYLE_JSON>" in out and "</STYLE_JSON>" in out:
+            style_block = out.split("<STYLE_JSON>")[1].split("</STYLE_JSON>")[0]
+            try:
+                style_json = json.loads(style_block)
+                style.update(style_json)
+            except:
+                pass
 
-    return style
+        lines = [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("<STYLE_JSON>")]
+        title = lines[0] if lines else f"Part {idx}"
+        bullets = [l.lstrip("-•* ").strip() for l in lines[1:] if not l.startswith("STYLE_JSON")] or [out]
+        slides.append({"title": title, "bullets": bullets[:6]})
 
-def extract_style_json_from_text(s: str):
-    m = re.search(r'<STYLE_JSON>(.*?)</STYLE_JSON>', s, re.DOTALL | re.IGNORECASE)
-    if m:
-        try:
-            return json.loads(m.group(1).strip())
-        except:
-            pass
-    return None
-
-# ------------------------------
-# Slide parsing
-# ------------------------------
-def parse_slides_from_output(output: str):
-    slides = []
-    pattern = re.compile(r'(?:Slide Title:|Title:)\s*(.+?)(?:\n|$)([\s\S]*?)(?=(?:Slide Title:|Title:)|$)', re.IGNORECASE)
-    matches = pattern.findall(output)
-    if matches:
-        for title, body in matches:
-            bullets = [re.sub(r'^[-•\*\d\)\.]+\s*', '', l.strip()) for l in body.splitlines() if l.strip()]
-            slides.append({"title": title.strip(), "bullets": bullets[:6]})
-        return slides
-    return [{"title": "Summary", "bullets": re.split(r'(?<=[.!?])\s+', simple_local_summary(output, 4))}]
+    return slides, style
 
 # ------------------------------
-# LLM call
+# PPT generation with style + logo
 # ------------------------------
-def summarize_and_style_with_groq(text: str, design_prompt: str, model: str = DEFAULT_MODEL):
-    text_for_prompt = text[:3000] + ("\n\n[TRUNCATED]" if len(text) > 3000 else "")
-    prompt = f"""
-You are a helpful presentation designer. Summarize the document into slides.
-
-Requirements:
-1. For each slide, provide a title and 4-5 concise bullet points.
-2. Apply ALL design requests: {design_prompt}
-3. After slides, include JSON inside <STYLE_JSON>...</STYLE_JSON> with keys:
-   background_color, font, font_size, font_color.
-
-Example output:
-Slide Title: Example Slide
-- Bullet one
-- Bullet two
-
-STYLE_JSON:
-<STYLE_JSON>{{"background_color":"#003366","font":"Calibri","font_size":18,"font_color":"#FFFFFF"}}</STYLE_JSON>
-
-Document:
-{text_for_prompt}
-"""
-    try:
-        chat = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": "You are a presentation designer."},
-                      {"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=800
-        )
-        raw = chat.choices[0].message.content
-        slides = parse_slides_from_output(raw)
-        style_json = extract_style_json_from_text(raw)
-        return slides, style_json, True, None
-    except Exception as e:
-        return [], None, False, str(e)
-
-# ------------------------------
-# PPT construction
-# ------------------------------
-def hex_to_rgb_obj(hex_color: str):
-    try:
-        h = hex_color.lstrip("#")
-        return RGBColor(int(h[0:2],16), int(h[2:4],16), int(h[4:6],16))
-    except:
-        return RGBColor(255,255,255)
-
-def make_ppt(slides, style):
+def make_ppt(slides, style=None, logo_file=None):
     prs = Presentation()
-    for s in slides:
-        slide = prs.slides.add_slide(prs.slide_layouts[1])
+
+    # Default style
+    bg_color = style.get("background_color", "#FFFFFF") if style else "#FFFFFF"
+    font_name = style.get("font", "Arial") if style else "Arial"
+    font_size = style.get("font_size", 18) if style else 18
+    font_color = style.get("font_color", "#000000") if style else "#000000"
+
+    # Title slide
+    title_slide = prs.slides.add_slide(prs.slide_layouts[0])
+    title_slide.shapes.title.text = "Auto-generated PPT"
+    title_slide.placeholders[1].text = "via Groq + Agentic AI"
+
+    # Apply background color
+    for slide in prs.slides:
         fill = slide.background.fill
         fill.solid()
-        fill.fore_color.rgb = hex_to_rgb_obj(style.get("background_color","#FFFFFF"))
+        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#", ""))
 
-        title_shape = slide.shapes.title
-        title_shape.text = s.get("title","")
+    # Content slides
+    for s in slides:
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = s["title"]
+
         tf = slide.placeholders[1].text_frame
         tf.clear()
-        for b in s.get("bullets", []):
-            if style.get("emoji_in_bullets"):
-                b = "👉 " + b
+        for b in s["bullets"]:
             p = tf.add_paragraph()
             p.text = b
-            p.font.name = style.get("font","Arial")
-            p.font.size = Pt(style.get("font_size",14))
-            p.font.color.rgb = hex_to_rgb_obj(style.get("font_color","#000000"))
+            p.level = 0
+            p.font.size = Pt(font_size)
+            p.font.name = font_name
+            p.font.color.rgb = RGBColor.from_string(font_color.replace("#", ""))
+
+        # Inject logo
+        if logo_file:
+            slide.shapes.add_picture(logo_file, Inches(7), Inches(5), Inches(1.2), Inches(1))
+
+        # Background for each slide
+        fill = slide.background.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor.from_string(bg_color.replace("#", ""))
 
     out = io.BytesIO()
     prs.save(out)
@@ -206,44 +168,22 @@ def make_ppt(slides, style):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.set_page_config(page_title="Agentic PPT Generator", layout="wide")
-st.title("📄 ➜ 🖥️ Multi-doc → PPT (Agentic, design prompts applied)")
+st.title("📄 ➜ 🖥️ Multi-doc to PPT (Groq Agentic AI + Custom Design)")
 
-design_prompt = st.text_area(
-    "Design instructions (free-form).",
-    value="Blue background, Calibri font, large text, add emojis"
-)
-st.markdown("""
-**Examples:**  
-- `Blue gradient background, Calibri, white bold titles, font size 20, add emojis to bullets`  
-- `Minimalist white background, Helvetica, small font, black text`  
-- `Dark theme (#0f172a), Sans-serif, font size 18, yellow bullet points`  
-- `Playful Comic Sans MS, pastel background, emojis in bullets, large font`  
-""")
-
-files = st.file_uploader("Upload PDF / DOCX / TXT (multiple)", accept_multiple_files=True)
-model_choice = st.selectbox("Groq model", ["llama3-8b-8192","gemma2-9b-it","mixtral-8x7b"])
+files = st.file_uploader("Upload PDF / DOCX / TXT", type=["pdf","docx","txt"], accept_multiple_files=True)
+design_prompt = st.text_area("Design Instructions (optional)", 
+                             "Examples:\n- Use dark blue background and white text\n- Font: Calibri, size 20\n- Add corporate branding feel")
+logo = st.file_uploader("Upload Logo/Image (optional)", type=["png","jpg","jpeg"])
+model_choice = st.selectbox("Groq model", ["llama-3.1-8b-instant","gemma2-9b-it","mixtral-8x7b"])
 
 if files and st.button("Generate PPT"):
-    slides_all = []
-    global_style = parse_design_prompt(design_prompt)
+    all_slides, final_style = [], {}
     for f in files:
         text = extract_text(f)
-        if not text:
-            continue
-        slides, style_json, used, err = summarize_and_style_with_groq(text, design_prompt, model=model_choice)
-        if used and slides:
-            slides_all.extend(slides)
-            if style_json:
-                global_style.update(style_json)
-        else:
-            st.warning(f"Groq failed for {f.name}, fallback used: {err}")
-            bullets = re.split(r'(?<=[.!?])\s+', simple_local_summary(text,4))
-            slides_all.append({"title":f.name, "bullets":bullets})
+        summaries, style = summarize_and_style(text, design_prompt, model=model_choice)
+        all_slides.extend(summaries)
+        final_style.update(style)  # override with last seen
+        st.success(f"Processed {f.name} → {len(summaries)} slides")
 
-    if slides_all:
-        pptx_bytes = make_ppt(slides_all, global_style)
-        st.download_button("⬇️ Download PPTX", pptx_bytes, "auto_presentation.pptx",
-            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
-    else:
-        st.error("No slides generated.")
+    pptx_bytes = make_ppt(all_slides, style=final_style, logo_file=logo if logo else None)
+    st.download_button("⬇️ Download PPTX", pptx_bytes, file_name="auto_ppt.pptx")
